@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  generateName: olm-operator-heap-
+  namespace: "default"
+  labels:
+    olm.openshift.io/pprof: ""
+data:
+  profile.pb.gz
