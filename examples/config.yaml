@@ -4,4 +4,4 @@ metadata:
   name: collect-profiles-config
   namespace: "default"
 data:
-  suspend: "false"
+  disabled: "false"
