@@ -1,0 +1,39 @@
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: collect-profiles
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: collect-profiles
+          containers:
+          - name: collect-profiles
+            image: quay.io/agreene/collect-profiles:test
+            imagePullPolicy: IfNotPresent
+            command:
+            - bin/collect-profiles
+            args: 
+            - -n
+            - olm
+            - --config-path
+            - /etc/config/
+            - --tls-cert-path 
+            - /etc/pki/tls/certs/
+            - olm-operator-heap-:https://olm-pprof-service:8443/debug/pprof/heap
+            - olm-operator-profile-:https://olm-pprof-service:8443/debug/pprof/profile
+            volumeMounts:
+            - mountPath: /etc/config
+              name: config-volume
+            - mountPath: /etc/pki/tls/certs/
+              name: secret-volume
+          volumes:
+          - name: config-volume
+            configMap:
+              name: collect-profiles-config
+          - name: secret-volume
+            secret:
+              secretName: olm-serving-cert
+          restartPolicy: OnFailure

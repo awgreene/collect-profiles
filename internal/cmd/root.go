@@ -6,15 +6,16 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -40,8 +41,8 @@ var (
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "The Kubernetes namespace where the generated configMaps should exist. Defaults to \"default\".")
 	rootCmd.MarkFlagRequired("namespace")
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config-path", "c", "/etc/config", "The path to the collect-profiles configuration file.")
-	rootCmd.MarkFlagRequired("config-path")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config-path", "c", "/etc/config/config.yaml", "The path to the collect-profiles configuration file.")
+	rootCmd.MarkFlagRequired("config-file")
 	rootCmd.PersistentFlags().StringVarP(&tlsCertPath, "tls-cert-path", "", "/etc/pki/tls/certs/", "The path to the tls cert used by the client making https requests against the pprof endpoints.")
 }
 
@@ -73,19 +74,19 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("must specify endpoint")
 			}
 
-			// get configmap
-			file, err := os.Open(configPath)
+			// check if disabled
+			file, err := os.Open(filepath.Join(configPath, disabled))
 			if err != nil {
 				return err
 			}
 			defer file.Close()
 
-			config := &corev1.ConfigMap{}
-			if err := yaml.NewYAMLOrJSONDecoder(file, 50).Decode(config); err != nil {
+			dat, err := ioutil.ReadFile(filepath.Join(configPath, disabled))
+			if err != nil {
 				return err
 			}
 
-			if strings.ToLower(config.Data[disabled]) == "true" {
+			if strings.ToLower(string(dat)) == "true" {
 				klog.Infof("CronJob disabled, exiting")
 				return nil
 			}
@@ -112,7 +113,9 @@ func newCmd() *cobra.Command {
 			for _, cm := range expiredConfigMaps {
 				if err := cfg.Client.Delete(context, &cm); err != nil {
 					errs = append(errs, err) // log the delete error
+					continue
 				}
+				klog.Infof("Successfully deleted configMap %s/%s", cm.GetNamespace(), cm.GetName())
 			}
 
 			// If a delete call failed, abort to avoid creating new configMaps
@@ -120,7 +123,7 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("error deleting expired pprof configMaps: %v", errs)
 			}
 
-			cert, err := tls.LoadX509KeyPair(tlsCertPath+corev1.TLSCertKey, tlsCertPath+corev1.TLSPrivateKeyKey)
+			cert, err := tls.LoadX509KeyPair(filepath.Join(tlsCertPath, corev1.TLSCertKey), filepath.Join(tlsCertPath, corev1.TLSPrivateKeyKey))
 			if err != nil {
 				return err
 			}
@@ -157,7 +160,7 @@ func newCmd() *cobra.Command {
 					continue
 				}
 
-				configMap := &corev1.ConfigMap{
+				cm := &corev1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{
 						GenerateName: a.generateName,
 						Namespace:    namespace,
@@ -171,11 +174,11 @@ func newCmd() *cobra.Command {
 					},
 				}
 
-				if err := cfg.Client.Create(context, configMap); err != nil {
+				if err := cfg.Client.Create(context, cm); err != nil {
 					klog.Error("error creating ConfigMap: %v", err)
 					continue
 				}
-
+				klog.Infof("Successfully created configMap %s/%s", cm.GetNamespace(), cm.GetName())
 				createdCM[a.generateName] = struct{}{}
 			}
 
@@ -188,7 +191,9 @@ func newCmd() *cobra.Command {
 				}
 				if err := cfg.Client.Delete(context, &cm); err != nil {
 					errs = append(errs, err)
+					continue
 				}
+				klog.Infof("Successfully deleted configMap %s/%s", cm.GetNamespace(), cm.GetName())
 			}
 
 			if len(errs) != 0 {
