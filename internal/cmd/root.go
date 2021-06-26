@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,13 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/awgreene/collect-profiles/internal/pkg/action"
-	"github.com/awgreene/collect-profiles/internal/pkg/log"
+	jobconfig "github.com/awgreene/collect-profiles/internal/pkg/config"
 	"github.com/awgreene/collect-profiles/internal/version"
 )
 
 const (
 	profileConfigMapLabelKey = "olm.openshift.io/pprof"
-	disabled                 = "disabled"
 )
 
 var (
@@ -48,7 +46,8 @@ func init() {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+		klog.Fatal(err)
+		os.Exit(1)
 	}
 }
 
@@ -74,23 +73,19 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("must specify endpoint")
 			}
 
-			// check if disabled
-			file, err := os.Open(filepath.Join(configPath, disabled))
+			jobConfig, err := jobconfig.GetConfig(configPath)
 			if err != nil {
-				return err
-			}
-			defer file.Close()
-
-			dat, err := ioutil.ReadFile(filepath.Join(configPath, disabled))
-			if err != nil {
+				klog.Infof("error retrieving job config")
 				return err
 			}
 
-			if strings.ToLower(string(dat)) == "true" {
+			// Exit if job is disabled
+			if jobConfig.Disabled {
 				klog.Infof("CronJob disabled, exiting")
 				return nil
 			}
 
+			// Validate input
 			validatedArguments := make([]*argument, len(args))
 			for i, arg := range args {
 				a, err := newArgument(arg)
@@ -123,40 +118,18 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("error deleting expired pprof configMaps: %v", errs)
 			}
 
-			cert, err := tls.LoadX509KeyPair(filepath.Join(tlsCertPath, corev1.TLSCertKey), filepath.Join(tlsCertPath, corev1.TLSPrivateKeyKey))
+			httpClient, err := getHttpClient(tlsCertPath)
 			if err != nil {
 				return err
-			}
-
-			httpClient := http.Client{
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{
-						InsecureSkipVerify: true,
-						Certificates:       []tls.Certificate{cert},
-					},
-				},
 			}
 
 			// Track successfully created configMaps by generateName for each endpoint being scrapped.
 			createdCM := map[string]struct{}{}
 
 			for _, a := range validatedArguments {
-				response, err := httpClient.Do(&http.Request{
-					Method: http.MethodGet,
-					URL:    a.endpoint,
-				})
+				b, err := requestURLBody(httpClient, a.url)
 				if err != nil {
-					klog.Errorf("error reading from pprof endpoint %s: %v", a.endpoint.String(), err)
-					continue
-				}
-				if response.StatusCode != http.StatusOK {
-					klog.Errorf("%s responded with %d status code instead of %s", a.endpoint, response.StatusCode, http.StatusOK)
-					continue
-				}
-
-				var b bytes.Buffer
-				if _, err := io.Copy(&b, response.Body); err != nil {
-					klog.Errorf("error reading response body: %v", err)
+					klog.Infof("error retrieving pprof profile: %v", err)
 					continue
 				}
 
@@ -170,14 +143,15 @@ func newCmd() *cobra.Command {
 					},
 					Immutable: getTruePointer(),
 					BinaryData: map[string][]byte{
-						"profile.pb.gz": b.Bytes(),
+						"profile.pb.gz": b,
 					},
 				}
 
 				if err := cfg.Client.Create(context, cm); err != nil {
-					klog.Error("error creating ConfigMap: %v", err)
+					klog.Errorf("error created configMap %s/%s: %v", cm.GetNamespace(), cm.GetName(), err)
 					continue
 				}
+
 				klog.Infof("Successfully created configMap %s/%s", cm.GetNamespace(), cm.GetName())
 				createdCM[a.generateName] = struct{}{}
 			}
@@ -227,7 +201,7 @@ func seperateConfigMapsIntoNewestAndExpired(configMaps []corev1.ConfigMap) (newe
 
 type argument struct {
 	generateName string
-	endpoint     *url.URL
+	url          *url.URL
 }
 
 func newArgument(s string) (*argument, error) {
@@ -236,19 +210,56 @@ func newArgument(s string) (*argument, error) {
 		return nil, fmt.Errorf("Error")
 	}
 
-	endpoint, err := url.Parse(splitStrings[1])
+	url, err := url.Parse(splitStrings[1])
 	if err != nil {
 		return nil, err
 	}
 
-	if strings.ToLower(endpoint.Scheme) != "https" {
+	if strings.ToLower(url.Scheme) != "https" {
 		return nil, fmt.Errorf("URL Scheme must be HTTPS")
 	}
 
 	arg := &argument{
 		generateName: splitStrings[0],
-		endpoint:     endpoint,
+		url:          url,
 	}
 
 	return arg, nil
+}
+
+func getHttpClient(tlsCertPath string) (*http.Client, error) {
+	cert, err := tls.LoadX509KeyPair(filepath.Join(tlsCertPath, corev1.TLSCertKey), filepath.Join(tlsCertPath, corev1.TLSPrivateKeyKey))
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{cert},
+			},
+		},
+	}, nil
+}
+
+func requestURLBody(httpClient *http.Client, u *url.URL) ([]byte, error) {
+	response, err := httpClient.Do(&http.Request{
+		Method: http.MethodGet,
+		URL:    u,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s responded with %d status code instead of %d", u, response.StatusCode, http.StatusOK)
+	}
+
+	var b bytes.Buffer
+	if _, err := io.Copy(&b, response.Body); err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	return b.Bytes(), nil
 }
