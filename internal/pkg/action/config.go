@@ -17,7 +17,7 @@ func (c *Configuration) Load() error {
 	// creates the in-cluster config
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		return err
 	}
 
 	sch := scheme.Scheme

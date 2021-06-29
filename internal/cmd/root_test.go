@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestSeperateConfigMapsIntoNewestAndExpired(t *testing.T) {
+func TestSeparateConfigMapsIntoNewestAndExpired(t *testing.T) {
 	nowTime := metav1.Now()
 	futureTime := metav1.NewTime(nowTime.Add(time.Hour))
 	var tests = []struct {
@@ -167,14 +167,14 @@ func TestSeperateConfigMapsIntoNewestAndExpired(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotNewest, gotExpired := seperateConfigMapsIntoNewestAndExpired(tt.arg)
+			gotNewest, gotExpired := separateConfigMapsIntoNewestAndExpired(tt.arg)
 
 			if !equal(gotNewest, tt.wantNewest) {
-				t.Errorf("seperateConfigMapsIntoNewestAndExpired contains unexpected newest CMs. Got %v, want %v", gotNewest, tt.wantNewest)
+				t.Errorf("separateConfigMapsIntoNewestAndExpired contains unexpected newest CMs. Got %v, want %v", gotNewest, tt.wantNewest)
 			}
 
 			if !equal(gotExpired, tt.wantExpired) {
-				t.Errorf("seperateConfigMapsIntoNewestAndExpired contains unexpected newest CMs. Got %v, want %v", gotExpired, tt.wantExpired)
+				t.Errorf("separateConfigMapsIntoNewestAndExpired contains unexpected expired CMs. Got %v, want %v", gotExpired, tt.wantExpired)
 			}
 
 		})
